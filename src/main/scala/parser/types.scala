@@ -1,10 +1,11 @@
 package parser
 
 import scala.math.BigInt
-import scala.collection.mutable.{Stack, HashMap}
+import scala.collection.mutable.{ Stack, HashMap }
 import scala.util.parsing.input._
 import scala.util.parsing.combinator._
 import util.UnescapeString
+import java.util.Arrays
 
 trait Type
 
@@ -18,12 +19,16 @@ case class AString(s: String) extends Type {
   override def toString = s
 }
 case class XMLTag(n: String, a: HashMap[String, String], isLone: Boolean = false) extends Type {
-  override def toString = s"""<$n ${a map {case (an, av) => an + "=\"" + av + "\""}}>""" +
+  override def toString = s"""<$n ${a map { case (an, av) => an + "=\"" + av + "\"" }}>""" +
     (if (isLone) "" else s"<$n>")
 }
 
 case class AnArray(a: Array[Type]) extends Type {
   override def toString = a.mkString(" ", "{", "}")
+  override def equals(that: Object) = that match {
+    case that: AnArray => Arrays.equals(a, that.a)
+    case _ => false
+  }
 }
 
 trait AbstractProc extends Type {
@@ -33,7 +38,7 @@ trait AbstractProc extends Type {
 case class Proc(z: List[Instruction]) extends AbstractProc {
   override def toString = z.mkString(" ", "[", "]")
   def operateOn(s: Stack[Type], e: HashMap[String, Type]) = {
-    z foreach {(i: Instruction) => i.operateOn(s, e)}
+    z foreach { (i: Instruction) => i.operateOn(s, e) }
   }
 }
 
@@ -70,7 +75,7 @@ case class Compound(z: Array[Instruction], isProc: Boolean) extends Instruction 
 case class Var(n: String) extends Instruction {
   def operateOn(s: Stack[Type], e: HashMap[String, Type]) = {
     if (n.startsWith("=") && n != "=") {
-      e(n.substring(0, n.length - 1)) = s.pop
+      e(n.substring(1)) = s.pop
     } else if (e contains n) {
       s.push(e(n))
     } else if (Allium.nTable contains n) {
@@ -84,21 +89,28 @@ case class Var(n: String) extends Instruction {
 class Allium extends JavaTokenParsers with PackratParsers {
   override def skipWhitespace = false
   lazy val intParser: PackratParser[Instruction] = wholeNumber ^^ {
-    (s: String) => Literal(Integer(BigInt(s)))}
+    (s: String) => Literal(Integer(BigInt(s)))
+  }
   lazy val realParser: PackratParser[Instruction] = floatingPointNumber ^^ {
-    (s: String) => Literal(Real(s.toDouble))}
+    (s: String) => Literal(Real(s.toDouble))
+  }
   lazy val stringParser: PackratParser[Instruction] = stringLiteral ^^ {
-    (s: String) => Literal(AString(UnescapeString.unescape(s) match {
-      case Some(s) => s
-      case None => throw new RuntimeException("syntax")
-    }))}
+    (s: String) =>
+      Literal(AString(UnescapeString.unescape(s) match {
+        case Some(s) => s
+        case None => throw new RuntimeException("syntax")
+      }))
+  }
   def multiple: PackratParser[List[Instruction]] = repsep(expression, " +".r)
   def arrayParser: PackratParser[Instruction] = "\\{ *".r ~ multiple ~ " *\\}".r ^^ {
-    case _ ~ e ~ _ => Compound(e.toArray, false)}
+    case _ ~ e ~ _ => Compound(e.toArray, false)
+  }
   def procParser: PackratParser[Instruction] = "\\[ *".r ~ multiple ~ " *\\]".r ^^ {
-    case _ ~ e ~ _ => Compound(e.toArray, true)}
+    case _ ~ e ~ _ => Compound(e.toArray, true)
+  }
   lazy val identifier: PackratParser[Instruction] = "[^\\Q[]{} \\E]*".r ^^ {
-    (s: String) => Var(s)}
+    (s: String) => Var(s)
+  }
   def expression: PackratParser[Instruction] =
     intParser | realParser | stringParser | arrayParser | procParser | identifier
 }
@@ -133,6 +145,102 @@ object Allium {
         case g: AbstractProc => g.operateOn(s, e)
         case _ => throw new RuntimeException(s"$f is not a procedure")
       }
+    }),
+    ("*", (s: Stack[Type], e: HashMap[String, Type]) => {
+      val e1 = s.pop
+      val e0 = s.pop
+      s.push((e0, e1) match {
+        case (Integer(a), Integer(b)) => Integer(a * b)
+        case (Integer(a), Real(b)) => Real(a.toDouble * b)
+        case (Real(a), Integer(b)) => Real(a * b.toDouble)
+        case (Real(a), Real(b)) => Real(a * b)
+      })
+    }),
+    ("/", (s: Stack[Type], e: HashMap[String, Type]) => {
+      val e1 = s.pop
+      val e0 = s.pop
+      s.push((e0, e1) match {
+        case (Integer(a), Integer(b)) => Integer(a.toDouble / b.toDouble)
+        case (Integer(a), Real(b)) => Real(a.toDouble / b)
+        case (Real(a), Integer(b)) => Real(a / b.toDouble)
+        case (Real(a), Real(b)) => Real(a / b)
+      })
+    }),
+    ("\\", (s: Stack[Type], e: HashMap[String, Type]) => {
+      val e1 = s.pop
+      val e0 = s.pop
+      s.push((e0, e1) match {
+        case (Integer(a), Integer(b)) => Integer(a / b)
+        case (Integer(a), Real(b)) => Integer((a.toDouble / b).toInt)
+        case (Real(a), Integer(b)) => Integer((a / b.toDouble).toInt)
+        case (Real(a), Real(b)) => Integer((a / b).toInt)
+      })
+    }),
+    ("^", (s: Stack[Type], e: HashMap[String, Type]) => {
+      val e1 = s.pop
+      val e0 = s.pop
+      s.push((e0, e1) match {
+        case (Integer(a), Integer(b)) => Integer(a pow b)
+        case (Integer(a), Real(b)) => Real(Math.pow(a.toDouble, b))
+        case (Real(a), Integer(b)) => Real(Math.pow(a, b.toDouble))
+        case (Real(a), Real(b)) => Real(Math.pow(a, b))
+      })
+    }),
+    ("=", (s: Stack[Type], e: HashMap[String, Type]) => {
+      val e1 = s.pop
+      val e0 = s.pop
+      s.push(Boolean(e0 == e1))
+    }),
+    ("!=", (s: Stack[Type], e: HashMap[String, Type]) => {
+      val e1 = s.pop
+      val e0 = s.pop
+      s.push(Boolean(e0 != e1))
+    }),
+    (">", (s: Stack[Type], e: HashMap[String, Type]) => {
+      val e1 = s.pop
+      val e0 = s.pop
+      s.push((e0, e1) match {
+        case (Integer(a), Integer(b)) => Boolean(a > b)
+        case (Integer(a), Real(b)) => Boolean(a.toDouble > b)
+        case (Real(a), Integer(b)) => Boolean(a > b.toDouble)
+        case (Real(a), Real(b)) => Boolean(a > b)
+        case (AString(a), AString(b)) => Boolean(a > b)
+      })
+    }),
+    ("<", (s: Stack[Type], e: HashMap[String, Type]) => {
+      val e1 = s.pop
+      val e0 = s.pop
+      s.push((e0, e1) match {
+        case (Integer(a), Integer(b)) => Boolean(a < b)
+        case (Integer(a), Real(b)) => Boolean(a.toDouble < b)
+        case (Real(a), Integer(b)) => Boolean(a < b.toDouble)
+        case (Real(a), Real(b)) => Boolean(a < b)
+        case (AString(a), AString(b)) => Boolean(a < b)
+      })
+    }),
+    (">=", (s: Stack[Type], e: HashMap[String, Type]) => {
+      val e1 = s.pop
+      val e0 = s.pop
+      s.push((e0, e1) match {
+        case (Integer(a), Integer(b)) => Boolean(a >= b)
+        case (Integer(a), Real(b)) => Boolean(a.toDouble >= b)
+        case (Real(a), Integer(b)) => Boolean(a >= b.toDouble)
+        case (Real(a), Real(b)) => Boolean(a >= b)
+        case (AString(a), AString(b)) => Boolean(a >= b)
+      })
+    }),
+    ("<=", (s: Stack[Type], e: HashMap[String, Type]) => {
+      val e1 = s.pop
+      val e0 = s.pop
+      s.push((e0, e1) match {
+        case (Integer(a), Integer(b)) => Boolean(a <= b)
+        case (Integer(a), Real(b)) => Boolean(a.toDouble <= b)
+        case (Real(a), Integer(b)) => Boolean(a <= b.toDouble)
+        case (Real(a), Real(b)) => Boolean(a <= b)
+        case (AString(a), AString(b)) => Boolean(a <= b)
+      })
     })
-    )
+  )
+  def bti(b: Boolean) = if (b) 1 else 0
+  def Boolean(b: Boolean) = Integer(bti(b))
 }
