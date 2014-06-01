@@ -5,6 +5,7 @@ import scala.collection.mutable.{ Stack, HashMap }
 import scala.util.parsing.input._
 import scala.util.parsing.combinator._
 import util.UnescapeString
+import scala.xml._
 
 trait Type
 
@@ -18,12 +19,16 @@ case class AString(s: String) extends Type {
   override def toString = s
 }
 case class XMLTag(n: String, a: HashMap[String, String], isLone: Boolean = false) extends Type {
-  override def toString = s"""<$n ${a map { case (an, av) => an + "=\"" + av + "\"" }}>""" +
-    (if (isLone) "" else s"<$n>")
+  override def toString = s"""<$n ${a map { case (an, av) => an + "=\"" + av + "\"" } mkString " "}>""" +
+    (if (isLone) "" else s"</$n>")
+}
+
+case class XMLElem(xml: NodeSeq) extends Type {
+  override def toString = xml.toString
 }
 
 case class AnArray(a: Array[Type]) extends Type {
-  override def toString = a.mkString(" ", "{", "}")
+  override def toString = a.mkString("{", " ", "}")
   override def equals(that: Any) = that match {
     case that: AnArray => a.toList == that.a.toList
     case _ => false
@@ -35,7 +40,7 @@ trait AbstractProc extends Type {
 }
 
 case class Proc(z: List[Instruction]) extends AbstractProc {
-  override def toString = z.mkString(" ", "[", "]")
+  override def toString = z.map(_.toString).mkString("[", " ", "]")
   def operateOn(s: Stack[Type], e: HashMap[String, Type]) = {
     z foreach { (i: Instruction) => i.operateOn(s, e) }
   }
@@ -54,6 +59,7 @@ trait Instruction {
 
 case class Literal(t: Type) extends Instruction {
   def operateOn(s: Stack[Type], e: HashMap[String, Type]) = s.push(t)
+  override def toString = t.toString
 }
 
 case class Compound(z: Array[Instruction], isProc: Boolean) extends Instruction {
@@ -68,7 +74,7 @@ case class Compound(z: Array[Instruction], isProc: Boolean) extends Instruction 
       s.push(AnArray(l.reverse.toArray))
     }
   }
-  override def toString = s"""Compound(${z.mkString(", ", "Array(", ")")}, $isProc"""
+  override def toString = z.mkString(if (isProc) "[" else "{", " ", if (isProc) "]" else "}")
 }
 
 case class Var(n: String) extends Instruction {

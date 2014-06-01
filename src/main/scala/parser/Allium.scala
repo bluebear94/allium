@@ -6,6 +6,7 @@ import scala.util.parsing.input._
 import scala.util.parsing.combinator._
 import util.UnescapeString
 import java.util.Arrays
+import scala.xml._
 
 class Allium extends JavaTokenParsers with PackratParsers {
   override def skipWhitespace = false
@@ -17,7 +18,7 @@ class Allium extends JavaTokenParsers with PackratParsers {
   }
   lazy val stringParser: PackratParser[Instruction] = stringLiteral ^^ {
     (s: String) =>
-      Literal(AString(UnescapeString.unescape(s) match {
+      Literal(AString(UnescapeString.unescape(s.substring(1, s.length - 1)) match {
         case Some(s) => s
         case None => throw new RuntimeException("syntax")
       }))
@@ -48,6 +49,8 @@ object Allium {
         case (Real(a), Real(b)) => Real(a + b)
         case (AString(a), b) => AString(a + b.toString)
         case (a, AString(b)) => AString(a.toString + b)
+        case (AnArray(a), AnArray(b)) => AnArray(a ++ b)
+        case (XMLElem(a), XMLElem(b)) => XMLElem(a ++ b)
       })
     }),
     ("-", (s: Stack[Type], e: HashMap[String, Type]) => {
@@ -64,8 +67,33 @@ object Allium {
       val f = s.pop
       f match {
         case g: AbstractProc => g.operateOn(s, e)
-        case _ => throw new RuntimeException(s"$f is not a procedure")
+        case _ => {
+          val e = s.pop
+          (e, f) match {
+            case (AnArray(a), Integer(b)) => s.push(a(b.intValue))
+            case (XMLTag(name, attr, lone), XMLElem(inner)) => {
+              val tag = "<" + name + (attr map {case (k, v) => k + "=\"" + v + "\""} mkString " ")
+              s.push(XMLElem(if (lone) {
+                inner ++ XML.loadString(tag + "/>")
+              } else {
+                XML.loadString(tag + ">" +
+                  inner.toString +
+                "</" + name + ">")
+              }))
+            }
+            case _ => throw new RuntimeException(s"$f is not a procedure")
+          }
+        }
       }
+    }),
+    ("!!", (s: Stack[Type], e: HashMap[String, Type]) => {
+      val e2 = s.pop
+      val e1 = s.pop
+      val e0 = s.pop
+      s.push((e0, e1, e2) match {
+        case (AString(a), Integer(b), Integer(c)) => AString(a.substring(b.toInt, c.toInt))
+        case (AnArray(a), Integer(b), Integer(c)) => AnArray(a.slice(b.toInt, c.toInt))
+      })
     }),
     ("*", (s: Stack[Type], e: HashMap[String, Type]) => {
       val e1 = s.pop
@@ -75,6 +103,7 @@ object Allium {
         case (Integer(a), Real(b)) => Real(a.toDouble * b)
         case (Real(a), Integer(b)) => Real(a * b.toDouble)
         case (Real(a), Real(b)) => Real(a * b)
+        case (Integer(a), AString(b)) => AString(b * a.intValue)
       })
     }),
     ("/", (s: Stack[Type], e: HashMap[String, Type]) => {
@@ -203,6 +232,18 @@ object Allium {
       val e0 = s.pop
       s.push(Boolean(toBool(e0) ^ toBool(e1)))
     }),
+    ("if", (s: Stack[Type], e: HashMap[String, Type]) => {
+      val e2 = s.pop
+      val e1 = s.pop
+      val e0 = s.pop
+      (e0, e1, e2) match {
+        case (a: AbstractProc, b: AbstractProc, c) => {
+          if (toBool(c)) a.operateOn(s, e)
+          else b.operateOn(s, e)
+        }
+        case (a, b, c) => s push (if (toBool(c)) a else b)
+      }
+    }),
     ("&", (s: Stack[Type], e: HashMap[String, Type]) => {
       val e1 = s.pop
       val e0 = s.pop
@@ -223,8 +264,29 @@ object Allium {
       s.push((e0, e1) match {
         case (Integer(a), Integer(b)) => Integer(a ^ b)
       })
+    }),
+    ("stx", (s: Stack[Type], e: HashMap[String, Type]) => {
+      s.push(XMLElem(new Text(s.pop.toString)))
+    }),
+    ("ct", (s: Stack[Type], e: HashMap[String, Type]) => {
+      val e1 = s.pop
+      val e0 = s.pop
+      s.push(e0 match {
+        case AString(name) => XMLTag(name, new HashMap[String, String], toBool(e1))
+      })
+    }),
+    ("bind", (s: Stack[Type], e: HashMap[String, Type]) => {
+      val e2 = s.pop
+      val e1 = s.pop
+      val e0 = s.pop
+      s.push((e0, e1, e2) match {
+        case (XMLTag(name, attr, lone), AString(k), AString(v)) => {
+          attr(k) = v
+          XMLTag(name, attr, lone)
+        }
+      })
     })
-  )
+)
   def bti(b: Boolean) = if (b) 1 else 0
   def Boolean(b: Boolean) = Integer(bti(b))
   def toBool(t: Type) = t match {
